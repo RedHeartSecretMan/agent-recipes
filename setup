@@ -1,0 +1,766 @@
+#!/usr/bin/env bash
+# Personal rule and Skill management. MCP declarations are validated, never deployed.
+set -euo pipefail
+umask 077
+
+APP_VERSION=0.1.0
+if [ "${1:-}" = --version ]; then
+  if [ $# -ne 1 ]; then
+    printf 'error: --version takes no arguments\n' >&2
+    exit 1
+  fi
+  printf 'agent-recipes %s\n' "$APP_VERSION"
+  exit 0
+fi
+
+REPO=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+RULES_FILE="$REPO/AGENTS.md"
+MANIFEST="$REPO/skills.json"
+MCP_MANIFEST="$REPO/mcps.json"
+TARGET_HOME=${AGENT_RECIPES_HOME:-$HOME}
+GIT_BIN=${AGENT_RECIPES_GIT:-git}
+BUNX_BIN=${AGENT_RECIPES_BUNX:-bunx}
+FORCE=0
+ARGS=()
+for arg in "$@"; do
+  case "$arg" in --force) FORCE=1 ;; *) ARGS[${#ARGS[@]}]="$arg" ;; esac
+done
+if [ ${#ARGS[@]} -gt 0 ]; then set -- "${ARGS[@]}"; else set --; fi
+
+say() { printf '%s\n' "$*"; }
+err() { printf 'error: %s\n' "$*" >&2; }
+die() {
+  err "$*"
+  exit 1
+}
+need() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
+exists() { [ -e "$1" ] || [ -L "$1" ]; }
+help() {
+  printf 'agent-recipes %s\n\n' "$APP_VERSION"
+  cat <<'HELP'
+Usage:
+  ./setup [--force]                           Sync AGENTS.md and declared Skills
+  ./setup skills list                        Show desired and installed state (read-only)
+  ./setup skills add SOURCE --skill NAME [--path PATH] [--ref REF]
+  ./setup skills remove NAME                 Remove this repository's managed Skill
+  ./setup skills set NAME [--source URL] [--path PATH] [--ref REF]
+  ./setup skills update [NAME]               Resolve upstream HEAD and upgrade
+  ./setup mcp                                Show numbered MCP configuration steps (read-only)
+  ./setup --version                          Show the repository release version
+
+SOURCE is an HTTPS GitHub repository URL; PATH is relative to that repository.
+REF can be a commit, branch or tag; skills.json always stores a full commit SHA.
+--force backs up and replaces modified managed content or conflicting rule files.
+MCP records are checked but never installed, started, authenticated or deployed.
+Requires Bash 3.2+, jq, Git, Node.js and Bun/bunx. Installer: bunx skills@latest.
+HELP
+}
+case "${1:-}" in --help | -h | help)
+  help
+  exit 0
+  ;;
+esac
+validate_mcps() {
+  jq -e '
+    type == "object" and (.mcpServers | type == "object") and
+    all(.mcpServers[];
+      type == "object" and
+      (if .type == "http" then (.url | type == "string" and test("^https?://"))
+       elif .type == "stdio" then (.command | type == "string" and length > 0) and
+         ((.args // []) | type == "array" and all(.[]; type == "string"))
+       else false end))
+  ' "$MCP_MANIFEST" >/dev/null || die 'mcps.json is not a valid MCP declaration (no service was started)'
+}
+mcp_guide() {
+  local records
+  records=$(jq -r '.mcpServers | to_entries | map("\(.key) (\(.value.type))") | join(", ")' "$MCP_MANIFEST")
+  printf 'MCP 配置指引\n当前记录：%s\n\n' "${records:-无}"
+  printf '1. 查看 "%s"，确认所需 MCP。\n' "$MCP_MANIFEST"
+  say '2. 选择目标客户端：Codex、Claude、DSH、Cursor、Zed 或 VS Code。'
+  say '3. 将下方提示交给 Agent，让它按目标客户端的官方配置格式处理。'
+  say '4. 按需在本机完成认证，并按客户端要求重载配置。'
+  say '5. 实际调用一次 MCP 工具，核对返回结果并报告未完成项。'
+  printf '\n可复制给 Agent：\n参考 "%s"，为本机的【目标客户端】增补或更新清单中的 MCP。保留其他 MCP、客户端设置和本机凭据，完成后回读核对并验证工具调用；无法验证时说明原因。\n' "$MCP_MANIFEST"
+}
+if [ "${1:-}" = mcp ]; then
+  [ $# -eq 1 ] || die 'mcp takes no arguments; it only prints configuration steps'
+  need jq
+  validate_mcps
+  mcp_guide
+  exit 0
+fi
+case "$TARGET_HOME" in /*) ;; *) die 'target home must be an absolute path' ;; esac
+case "$TARGET_HOME$REPO" in *$'\n'* | *$'\r'*) die 'repository and target paths cannot contain line breaks' ;; esac
+if [ "$TARGET_HOME" = "$HOME" ]; then
+  STATE_ROOT=${XDG_STATE_HOME:-$TARGET_HOME/.local/state}/agent-recipes
+  if [ -n "${XDG_STATE_HOME:-}" ]; then NATIVE_LOCK="$XDG_STATE_HOME/skills/.skill-lock.json"; else NATIVE_LOCK="$TARGET_HOME/.agents/.skill-lock.json"; fi
+else
+  STATE_ROOT="$TARGET_HOME/.local/state/agent-recipes"
+  NATIVE_LOCK="$TARGET_HOME/.agents/.skill-lock.json"
+fi
+STATE="$STATE_ROOT/state.json"
+BACKUPS="$STATE_ROOT/backups"
+SKILLS_DIR="$TARGET_HOME/.agents/skills"
+TMP=''
+LOCKED=0
+ACTIVE_BACKUP=''
+ACTIVE_NAME=''
+
+need jq
+validate_manifest() {
+  jq -e '
+    type == "object" and (.skills | type == "array") and
+    ([.skills[].name] | length == (unique | length)) and
+    all(.skills[];
+      (keys | sort) == ["name","path","ref","source"] and
+      (.name | type == "string" and test("^[a-z0-9][a-z0-9-]*$")) and
+      (.source | type == "string" and test("^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")) and
+      (.path | type == "string" and length > 0 and
+        (test("^/|\\\\|[\\r\\n\\t]|(^|/)\\.\\.(/|$)") | not)) and
+      (.ref | type == "string" and test("^[0-9a-f]{40}$")))
+  ' "$MANIFEST" >/dev/null || die 'skills.json must contain unique name/source/path/ref entries with pinned commits'
+}
+validate_manifest
+validate_mcps
+
+state_json() { if [ -f "$STATE" ]; then cat "$STATE"; else printf '{"version":1,"skills":{},"rules":{}}\n'; fi; }
+owned_skill() { state_json | jq -c --arg n "$1" '.skills[$n] // null'; }
+state_put() {
+  local section=$1 key=$2 value=$3 candidate
+  candidate=$(mktemp "$STATE_ROOT/.state.XXXXXX") || return 1
+  if ! state_json | jq --arg s "$section" --arg k "$key" --argjson v "$value" 'if $v == null then del(.[$s][$k]) else .[$s][$k]=$v end' >"$candidate"; then
+    rm -f "$candidate"
+    return 1
+  fi
+  mv -f "$candidate" "$STATE"
+}
+fingerprint() {
+  node - "$1" <<'NODE'
+const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
+const root = process.argv[2], hash = crypto.createHash('sha256');
+function walk(p, rel) {
+  const s = fs.lstatSync(p);
+  hash.update(JSON.stringify([rel, s.isSymbolicLink() ? 'link' : s.isDirectory() ? 'dir' : 'file', s.mode & 511]));
+  if (s.isSymbolicLink()) hash.update(fs.readlinkSync(p));
+  else if (s.isDirectory()) for (const n of fs.readdirSync(p).sort()) walk(path.join(p,n),path.posix.join(rel,n));
+  else if (s.isFile()) hash.update(fs.readFileSync(p));
+  else throw new Error('unsupported file type: ' + p);
+}
+// A canonical Skill may itself be a symlink; hash its installed contents.
+const p = fs.realpathSync(root); walk(p, ''); console.log(hash.digest('hex'));
+NODE
+}
+file_hash() { node -e 'console.log(require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(process.argv[1])).digest("hex"))' "$1"; }
+current_entry() { jq -c --arg n "$1" '.skills[] | select(.name == $n)' "$MANIFEST"; }
+check_name() { [[ "$1" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "invalid Skill name: $1"; }
+normalize_source() {
+  local source=${1%/}
+  source=${source%.git}
+  [[ "$source" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+    err 'source must be an HTTPS GitHub repository URL without credentials or query'
+    return 1
+  }
+  printf '%s\n' "$source"
+}
+check_path() {
+  jq -ne --arg p "$1" '$p | length > 0 and (test("^/|\\\\|[\\r\\n\\t]|(^|/)\\.\\.(/|$)") | not)' >/dev/null || {
+    err 'path must stay inside the source repository'
+    return 1
+  }
+}
+resolve_ref() {
+  local source=$1 requested=${2:-} output refs peeled
+  if [[ "$requested" =~ ^[0-9a-f]{40}$ ]]; then
+    printf '%s\n' "$requested"
+    return 0
+  fi
+  case "$requested" in -*)
+    err 'ref cannot start with an option'
+    return 1
+    ;;
+  esac
+  if [ -z "$requested" ]; then
+    output=$("$GIT_BIN" ls-remote --symref "$source" HEAD) || return 1
+    refs=$(printf '%s\n' "$output" | awk '$2 == "HEAD" && length($1) == 40 {print $1}' | sort -u)
+  else
+    output=$("$GIT_BIN" ls-remote "$source" "$requested" "refs/heads/$requested" "refs/tags/$requested" "refs/tags/$requested^{}") || return 1
+    peeled=$(printf '%s\n' "$output" | awk '/\^\{\}$/ {print $1}')
+    if [ -n "$peeled" ]; then
+      refs=$(printf '%s\n' "$output" | awk -v tag="refs/tags/$requested" '$2 != tag {print $1}' | sort -u)
+    else
+      refs=$(printf '%s\n' "$output" | awk 'length($1) == 40 {print $1}' | sort -u)
+    fi
+  fi
+  [[ "$refs" =~ ^[0-9a-f]{40}$ ]] || {
+    err 'upstream ref is absent or ambiguous'
+    return 1
+  }
+  printf '%s\n' "$refs"
+}
+manifest_commit() {
+  local candidate=$1 current tmpfile
+  current=$(file_hash "$MANIFEST") || return 1
+  [ "$current" = "$MANIFEST_BASE_SHA" ] || {
+    err 'skills.json changed externally; preserving that edit'
+    return 1
+  }
+  tmpfile=$(mktemp "$REPO/.skills.XXXXXX") || return 1
+  jq '.skills |= sort_by(.name)' "$candidate" >"$tmpfile" || {
+    rm -f "$tmpfile"
+    return 1
+  }
+  chmod 644 "$tmpfile"
+  mv -f "$tmpfile" "$MANIFEST" || return 1
+  MANIFEST_BASE_SHA=$(file_hash "$MANIFEST")
+}
+manifest_with() {
+  jq --arg n "$1" --argjson e "$2" '.skills = ([.skills[] | select(.name != $n)] + (if $e == null then [] else [$e] end))' "$MANIFEST" >"$3"
+}
+lock_entry() {
+  if [ -f "$NATIVE_LOCK" ]; then jq -c --arg n "$1" '.skills[$n] // null' "$NATIVE_LOCK"; else printf 'null\n'; fi
+}
+native_matches() {
+  local entry=$1 name
+  name=$(printf '%s\n' "$entry" | jq -r '.name')
+  lock_entry "$name" | jq -e --argjson e "$entry" '
+    .ref == $e.ref and .sourceType == "github" and
+    .source == ($e.source | ltrimstr("https://github.com/")) and
+    (.sourceUrl == $e.source or .sourceUrl == ($e.source + ".git")) and
+    (.skillPath | type == "string" and length > 0) and
+    ($e.path == "?" or
+      ((.skillPath | sub("/SKILL\\.md$"; "") | if . == "SKILL.md" then "." else . end) == $e.path))
+  ' >/dev/null
+}
+restore_lock_entry() {
+  local name=$1 old=$2 tmpfile
+  mkdir -p "$(dirname "$NATIVE_LOCK")"
+  tmpfile=$(mktemp "$(dirname "$NATIVE_LOCK")/.lock.XXXXXX") || return 1
+  if [ -f "$NATIVE_LOCK" ]; then
+    jq --arg n "$name" --argjson v "$old" 'if $v == null then del(.skills[$n]) else .skills[$n]=$v end' "$NATIVE_LOCK" >"$tmpfile" || {
+      rm -f "$tmpfile"
+      return 1
+    }
+  else
+    jq -n --arg n "$name" --argjson v "$old" '{version:3,skills:(if $v == null then {} else {($n):$v} end)}' >"$tmpfile"
+  fi
+  mv -f "$tmpfile" "$NATIVE_LOCK"
+}
+# Snapshot the selected Skill and conventional per-agent links, never their referents.
+skill_paths() {
+  local name=$1 p
+  printf '%s\n' "$SKILLS_DIR/$name"
+  for p in "$TARGET_HOME"/.*/skills/"$name" "$TARGET_HOME"/.config/*/skills/"$name"; do
+    [ "$p" = "$SKILLS_DIR/$name" ] && continue
+    case "$p" in *$'\n'* | *$'\r'*) continue ;; esac
+    if exists "$p"; then printf '%s\n' "$p"; fi
+  done
+}
+shared_skill_path() {
+  node - "$1" "$SKILLS_DIR/$2" <<'NODE'
+const fs = require('node:fs'), path = require('node:path');
+const [alias, canonical] = process.argv.slice(2);
+try { process.exit(fs.realpathSync(alias) === fs.realpathSync(canonical) ? 0 : 1); }
+catch {
+  try {
+    const target = path.resolve(path.dirname(alias), fs.readlinkSync(alias));
+    process.exit(target === path.resolve(canonical) ? 0 : 1);
+  } catch { process.exit(1); }
+}
+NODE
+}
+foreign_skill_paths() {
+  local name=$1 p
+  while IFS= read -r p; do
+    [ "$p" = "$SKILLS_DIR/$name" ] && continue
+    if exists "$p" && ! shared_skill_path "$p" "$name"; then printf '%s\n' "$p"; fi
+  done < <(skill_paths "$name")
+}
+protect_foreign_paths() {
+  local p i=0
+  : >"$ACTIVE_BACKUP/protected-indices"
+  while IFS= read -r p; do
+    if [ "$p" != "$SKILLS_DIR/$ACTIVE_NAME" ] && exists "$p" && ! shared_skill_path "$p" "$ACTIVE_NAME"; then
+      mv -- "$p" "$ACTIVE_BACKUP/protected-$i" || return 1
+      printf '%s\n' "$i" >>"$ACTIVE_BACKUP/protected-indices"
+    fi
+    i=$((i + 1))
+  done <"$ACTIVE_BACKUP/paths"
+}
+restore_foreign_paths() {
+  local i p
+  while IFS= read -r i; do
+    p=$(sed -n "$((i + 1))p" "$ACTIVE_BACKUP/paths")
+    if exists "$p"; then rm -rf -- "$p" || return 1; fi
+    mkdir -p "$(dirname "$p")" || return 1
+    mv -- "$ACTIVE_BACKUP/protected-$i" "$p" || return 1
+    printf 'warning: independent Skill copy preserved: %s\n' "$p" >&2
+  done <"$ACTIVE_BACKUP/protected-indices"
+}
+transaction_begin() {
+  local name=$1 p i=0 backup
+  backup=$(mktemp -d "$BACKUPS/skill-$name.XXXXXX") || return 1
+  printf '%s\n' "$(lock_entry "$name")" >"$backup/native-entry.json" || return 1
+  printf '%s\n' "$(owned_skill "$name")" >"$backup/state-entry.json" || return 1
+  : >"$backup/paths"
+  while IFS= read -r p; do
+    printf '%s\n' "$p" >>"$backup/paths"
+    if exists "$p"; then cp -pPR "$p" "$backup/item-$i" || return 1; fi
+    i=$((i + 1))
+  done < <(skill_paths "$name")
+  ACTIVE_NAME=$name
+  ACTIVE_BACKUP=$backup
+}
+transaction_rollback() {
+  [ -n "$ACTIVE_BACKUP" ] || return 0
+  local backup=$ACTIVE_BACKUP name=$ACTIVE_NAME p i=0 failed=0
+  # Remove only paths for this validated Skill name; backups retain prior entries.
+  while IFS= read -r p; do
+    if exists "$p"; then rm -rf -- "$p" || failed=1; fi
+  done < <(skill_paths "$name")
+  while IFS= read -r p; do
+    if [ -e "$backup/item-$i" ] || [ -L "$backup/item-$i" ]; then
+      mkdir -p "$(dirname "$p")"
+      cp -pPR "$backup/item-$i" "$p" || failed=1
+    fi
+    i=$((i + 1))
+  done <"$backup/paths"
+  restore_lock_entry "$name" "$(cat "$backup/native-entry.json")" || failed=1
+  state_put skills "$name" "$(cat "$backup/state-entry.json")" || failed=1
+  ACTIVE_BACKUP=''
+  ACTIVE_NAME=''
+  [ "$failed" -eq 0 ] || {
+    err "rollback incomplete; recovery data: $backup"
+    return 1
+  }
+  err "restored $name; recovery data: $backup"
+}
+cleanup() {
+  local status=$?
+  trap - EXIT INT TERM
+  if [ -n "$ACTIVE_BACKUP" ]; then transaction_rollback || status=1; fi
+  if [ -n "$TMP" ]; then rm -rf -- "$TMP"; fi
+  if [ "$LOCKED" -eq 1 ]; then rmdir "$STATE_ROOT/.running" 2>/dev/null || true; fi
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+ensure_mutation() {
+  need node
+  need "$GIT_BIN"
+  mkdir -p "$STATE_ROOT" "$BACKUPS" "$SKILLS_DIR"
+  if ! mkdir "$STATE_ROOT/.running" 2>/dev/null; then die "another setup is running (or a stale lock exists): $STATE_ROOT/.running"; fi
+  LOCKED=1
+  if [ -f "$STATE" ]; then jq -e '.version == 1 and (.skills | type == "object") and (.rules | type == "object")' "$STATE" >/dev/null || die 'invalid local ownership state'; fi
+  TMP=$(mktemp -d "$STATE_ROOT/.work.XXXXXX")
+  MANIFEST_BASE_SHA=$(file_hash "$MANIFEST")
+}
+ensure_installer() {
+  need "$BUNX_BIN"
+  if [ "$TARGET_HOME" != "$HOME" ] && [ -z "${AGENT_RECIPES_BUNX:-}" ]; then
+    err 'an alternate target home requires an explicit installer helper; real global installation was refused'
+    return 1
+  fi
+}
+check_skill_drift() {
+  local name=$1 owned target="$SKILLS_DIR/$1" now old
+  owned=$(owned_skill "$name") || return 1
+  if [ "$owned" != null ] && exists "$target"; then
+    now=$(fingerprint "$target") || return 1
+    old=$(printf '%s\n' "$owned" | jq -r '.fingerprint')
+    if [ "$now" != "$old" ] && [ "$FORCE" -ne 1 ]; then
+      err "managed Skill $name was edited locally; use --force to back up and replace it"
+      return 1
+    fi
+  fi
+}
+verify_install() {
+  local entry=$1 result=$2 name source ref expected_path native actual_path
+  name=$(printf '%s\n' "$entry" | jq -r '.name')
+  source=$(printf '%s\n' "$entry" | jq -r '.source')
+  ref=$(printf '%s\n' "$entry" | jq -r '.ref')
+  expected_path=$(printf '%s\n' "$entry" | jq -r '.path')
+  jq -e --arg n "$name" --arg r "$ref" 'type == "array" and length > 0 and all(.[]; .status == "installed") and any(.[]; .name == $n and .ref == $r and (.path | type == "string" and length > 0))' "$result" >/dev/null || {
+    err 'installer JSON receipt did not confirm the requested Skill and commit'
+    return 1
+  }
+  [ -f "$SKILLS_DIR/$name/SKILL.md" ] || {
+    err 'installer did not create the canonical Skill directory'
+    return 1
+  }
+  local receipt_path
+  receipt_path=$(jq -r --arg n "$name" '.[] | select(.name == $n) | .path' "$result")
+  node -e 'const fs=require("node:fs");process.exit(fs.realpathSync(process.argv[1])===fs.realpathSync(process.argv[2])?0:1)' "$receipt_path" "$SKILLS_DIR/$name" || {
+    err 'installer receipt path does not match the canonical directory'
+    return 1
+  }
+  native=$(lock_entry "$name") || return 1
+  native_matches "$entry" || {
+    err 'native lock does not confirm the requested remote source, path and commit'
+    return 1
+  }
+  actual_path=$(printf '%s\n' "$native" | jq -r '.skillPath | sub("/SKILL\\.md$"; "") | if . == "SKILL.md" then "." else . end')
+  check_path "$actual_path" || return 1
+  if [ "$expected_path" != '?' ] && [ "$expected_path" != "$actual_path" ]; then
+    err "native lock path differs from the requested path for $name"
+    return 1
+  fi
+  VERIFIED_ENTRY=$(printf '%s\n' "$entry" | jq -c --arg p "$actual_path" '.path=$p')
+}
+install_entry() {
+  local entry=$1 persist=$2 name source ref path owned fp url receipt candidate stored native foreign installer_status
+  ensure_installer || return 1
+  name=$(printf '%s\n' "$entry" | jq -r '.name')
+  source=$(printf '%s\n' "$entry" | jq -r '.source')
+  ref=$(printf '%s\n' "$entry" | jq -r '.ref')
+  path=$(printf '%s\n' "$entry" | jq -r '.path')
+  check_skill_drift "$name" || return 1
+  owned=$(owned_skill "$name") || return 1
+  if [ "$owned" != null ] && [ -f "$SKILLS_DIR/$name/SKILL.md" ]; then
+    fp=$(fingerprint "$SKILLS_DIR/$name") || return 1
+    stored=$(printf '%s\n' "$owned" | jq -cS '.entry')
+    native=$(lock_entry "$name")
+    if [ "$stored" = "$(printf '%s\n' "$entry" | jq -cS '.')" ] && [ "$(printf '%s\n' "$owned" | jq -r '.fingerprint')" = "$fp" ] && native_matches "$entry"; then
+      foreign=$(foreign_skill_paths "$name")
+      if [ -n "$foreign" ]; then printf 'warning: independent Skill copies remain: %s\n' "$foreign" >&2; fi
+      say "unchanged: $name"
+      return 0
+    fi
+  fi
+  [ "$(file_hash "$MANIFEST")" = "$MANIFEST_BASE_SHA" ] || {
+    err 'skills.json changed externally'
+    return 1
+  }
+  transaction_begin "$name" || return 1
+  if ! protect_foreign_paths; then
+    transaction_rollback || true
+    return 1
+  fi
+  # Detach an old development symlink before asking the native installer to write.
+  if exists "$SKILLS_DIR/$name"; then mv -- "${SKILLS_DIR:?}/${name:?}" "$ACTIVE_BACKUP/detached" || return 1; fi
+  url="$source/tree/$ref"
+  if [ "$path" != '.' ] && [ "$path" != '?' ]; then url="$url/$path"; fi
+  receipt="$ACTIVE_BACKUP/receipt.json"
+  say "installing: $name ($ref)"
+  installer_status=0
+  # Automatic targets can include agents that reject --global (e.g. PromptScript).
+  # universal selects the shared user directory, not a specific vendor client.
+  "$BUNX_BIN" skills@latest add "$url" --global --skill "$name" --agent universal --yes --json >"$receipt" 2>"$ACTIVE_BACKUP/installer.stderr" || installer_status=$?
+  cat "$ACTIVE_BACKUP/installer.stderr" >&2
+  if [ "$installer_status" -ne 0 ]; then
+    err "installation failed: $name (installer exit $installer_status)"
+    transaction_rollback || true
+    return 1
+  fi
+  if ! verify_install "$entry" "$receipt" || ! restore_foreign_paths; then
+    transaction_rollback || true
+    return 1
+  fi
+  fp=$(fingerprint "$SKILLS_DIR/$name") || {
+    transaction_rollback || true
+    return 1
+  }
+  if ! state_put skills "$name" "$(jq -nc --argjson e "$VERIFIED_ENTRY" --arg f "$fp" '{entry:$e,fingerprint:$f}')"; then
+    transaction_rollback || true
+    return 1
+  fi
+  if [ "$persist" = yes ]; then
+    candidate="$TMP/manifest-$name.json"
+    if ! manifest_with "$name" "$VERIFIED_ENTRY" "$candidate" || ! manifest_commit "$candidate"; then
+      transaction_rollback || true
+      return 1
+    fi
+  fi
+  ACTIVE_BACKUP=''
+  ACTIVE_NAME=''
+  say "installed: $name ($ref)"
+}
+
+rule_owned_ok() {
+  local target=$1 old now
+  if ! exists "$target"; then return 0; fi
+  [ -e "$target" ] || return 1
+  old=$(state_json | jq -r --arg p "$target" '.rules[$p].fingerprint // ""')
+  [ -n "$old" ] || return 1
+  now=$(fingerprint "$target") || return 1
+  [ "$now" = "$old" ]
+}
+backup_rule() {
+  local target=$1 dir
+  if exists "$target"; then
+    dir=$(mktemp -d "$BACKUPS/rule.XXXXXX") || return 1
+    cp -pPR "$target" "$dir/original" || return 1
+    printf '%s\n' "$target" >"$dir/path"
+  fi
+}
+rule_record() {
+  local target=$1
+  state_put rules "$target" "$(jq -nc --arg f "$(fingerprint "$target")" '{fingerprint:$f}')"
+}
+sync_link() {
+  local target=$1 source=$2 temp
+  if [ -d "$target" ]; then
+    err "rule target is a directory: $target"
+    return 1
+  fi
+  if [ -L "$target" ] && [ "$(readlink "$target")" = "$source" ]; then
+    rule_record "$target" || return 1
+    say "unchanged rule: $target"
+    return 0
+  fi
+  if exists "$target" && ! cmp -s "$target" "$source" && ! rule_owned_ok "$target" && [ "$FORCE" -ne 1 ]; then
+    err "rule conflict: $target (use --force to back up and replace)"
+    return 1
+  fi
+  mkdir -p "$(dirname "$target")" || return 1
+  backup_rule "$target" || return 1
+  temp="$target.agent-recipes-$$"
+  rm -f "$temp"
+  if ln -s "$source" "$temp" 2>/dev/null; then
+    mv -f "$temp" "$target" || return 1
+  else
+    cp -p "$source" "$temp" && mv -f "$temp" "$target" || return 1
+  fi
+  cmp -s "$target" "$source" || return 1
+  rule_record "$target" || return 1
+  say "synced rule: $target"
+}
+client_present() {
+  local client=$1
+  [ -d "$TARGET_HOME/.$client" ] && return 0
+  [ "$TARGET_HOME" = "$HOME" ] || return 1
+  if [ "$client" = codex ] && [ -n "${CODEX_HOME:-}" ] && [ -d "$CODEX_HOME" ]; then return 0; fi
+  command -v "$client" >/dev/null 2>&1 && return 0
+  if [ "$client" = cursor ] && [ -d '/Applications/Cursor.app' ]; then return 0; fi
+  return 1
+}
+sync_rules() {
+  local canonical="$TARGET_HOME/.agents/AGENTS.md" client target generated failure=0
+  sync_link "$canonical" "$RULES_FILE" || return 1
+  for client in codex claude dsh; do
+    if client_present "$client"; then
+      case "$client" in claude) target="$TARGET_HOME/.claude/CLAUDE.md" ;; *) target="$TARGET_HOME/.$client/AGENTS.md" ;; esac
+      if [ "$client" = codex ] && [ "$TARGET_HOME" = "$HOME" ] && [ -n "${CODEX_HOME:-}" ]; then target="$CODEX_HOME/AGENTS.md"; fi
+      sync_link "$target" "$canonical" || failure=1
+    fi
+  done
+  if client_present cursor; then
+    target="$TARGET_HOME/.cursor/rules/global-principles.mdc"
+    generated="$TMP/cursor.mdc"
+    {
+      printf '%s\n' '---' 'description: 个人全局规则' 'alwaysApply: true' '---' '' '<!-- Generated by agent-recipes; edit AGENTS.md. -->' ''
+      cat "$RULES_FILE"
+    } >"$generated"
+    if [ -d "$target" ]; then
+      err "rule target is a directory: $target"
+      failure=1
+    elif exists "$target" && cmp -s "$target" "$generated"; then
+      say "unchanged rule: $target"
+    elif exists "$target" && ! rule_owned_ok "$target" && [ "$FORCE" -ne 1 ]; then
+      err "rule conflict: $target (use --force to back up and replace)"
+      failure=1
+    else
+      mkdir -p "$(dirname "$target")" || return 1
+      backup_rule "$target" || return 1
+      cp "$generated" "$target.agent-recipes-$$" && mv -f "$target.agent-recipes-$$" "$target" || return 1
+      cmp -s "$target" "$generated" || return 1
+      rule_record "$target" || return 1
+      say "synced rule: $target"
+    fi
+  fi
+  [ "$failure" -eq 0 ]
+}
+list_skills() {
+  local entry name desired installed status owned fp foreign
+  printf 'NAME\tDESIRED REF\tINSTALLED REF\tSTATUS\n'
+  while IFS= read -r entry; do
+    name=$(printf '%s\n' "$entry" | jq -r '.name')
+    desired=$(printf '%s\n' "$entry" | jq -r '.ref')
+    installed=$(lock_entry "$name" | jq -r '.ref // "-"')
+    status=missing
+    if [ -f "$SKILLS_DIR/$name/SKILL.md" ]; then
+      owned=$(owned_skill "$name")
+      if [ "$owned" = null ]; then
+        status=unmanaged
+      elif ! native_matches "$entry" || [ "$(printf '%s\n' "$owned" | jq -cS '.entry')" != "$(printf '%s\n' "$entry" | jq -cS '.')" ]; then
+        status=outdated
+      elif command -v node >/dev/null 2>&1; then
+        fp=$(fingerprint "$SKILLS_DIR/$name")
+        if [ "$fp" = "$(printf '%s\n' "$owned" | jq -r '.fingerprint')" ]; then status=installed; else status=modified; fi
+      else status=unverified; fi
+    fi
+    if command -v node >/dev/null 2>&1; then
+      foreign=$(foreign_skill_paths "$name")
+      if [ -n "$foreign" ]; then status="$status+external"; fi
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$name" "$desired" "$installed" "$status"
+  done < <(jq -c '.skills[]' "$MANIFEST")
+}
+remove_skill() {
+  local name=$1 owned candidate backup foreign installer_status
+  check_name "$name"
+  [ -n "$(current_entry "$name")" ] || {
+    err "Skill is not in this repository: $name"
+    return 1
+  }
+  owned=$(owned_skill "$name")
+  if [ "$owned" = null ]; then
+    candidate="$TMP/remove.json"
+    manifest_with "$name" null "$candidate" && manifest_commit "$candidate" || return 1
+    say "removed declaration: $name (unmanaged local installation, if any, was preserved)"
+    return 0
+  fi
+  check_skill_drift "$name" || return 1
+  foreign=$(foreign_skill_paths "$name")
+  if [ -n "$foreign" ]; then
+    err "independent same-name installations exist; declaration and installations were preserved: $foreign"
+    return 1
+  fi
+  ensure_installer || return 1
+  transaction_begin "$name" || return 1
+  installer_status=0
+  "$BUNX_BIN" skills@latest remove "$name" --global --yes >"$ACTIVE_BACKUP/removal.stdout" 2>"$ACTIVE_BACKUP/installer.stderr" || installer_status=$?
+  cat "$ACTIVE_BACKUP/removal.stdout"
+  cat "$ACTIVE_BACKUP/installer.stderr" >&2
+  if [ "$installer_status" -ne 0 ]; then
+    transaction_rollback || true
+    return 1
+  fi
+  if exists "$SKILLS_DIR/$name" || [ "$(lock_entry "$name")" != null ]; then
+    err 'native removal was incomplete'
+    transaction_rollback || true
+    return 1
+  fi
+  candidate="$TMP/remove.json"
+  if ! manifest_with "$name" null "$candidate" || ! state_put skills "$name" null || ! manifest_commit "$candidate"; then
+    transaction_rollback || true
+    return 1
+  fi
+  ACTIVE_BACKUP=''
+  ACTIVE_NAME=''
+  say "removed: $name"
+}
+add_or_set() {
+  local action=$1 source='' name='' path='' requested='' entry='' seen=0
+  local source_changed=0 path_explicit=0 ref_explicit=0 original_source=''
+  shift
+  if [ "$action" = add ]; then
+    [ $# -gt 0 ] || die 'add requires SOURCE'
+    source=$1
+    shift
+  else
+    [ $# -gt 0 ] || die 'set requires NAME'
+    name=$1
+    shift
+    check_name "$name"
+    entry=$(current_entry "$name")
+    [ -n "$entry" ] || die "unknown Skill: $name"
+    source=$(printf '%s\n' "$entry" | jq -r '.source')
+    original_source=$source
+    path=$(printf '%s\n' "$entry" | jq -r '.path')
+    requested=$(printf '%s\n' "$entry" | jq -r '.ref')
+  fi
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --skill | --name)
+        [ $# -ge 2 ] || die "$1 requires a value"
+        [ "$action" = add ] || die 'set cannot rename a Skill'
+        name=$2
+        shift 2
+        ;;
+      --source)
+        [ $# -ge 2 ] || die '--source requires a value'
+        [ "$action" = set ] || die 'add takes SOURCE positionally'
+        source=$2
+        source_changed=1
+        seen=1
+        shift 2
+        ;;
+      --path)
+        [ $# -ge 2 ] || die '--path requires a value'
+        path=$2
+        path_explicit=1
+        seen=1
+        shift 2
+        ;;
+      --ref)
+        [ $# -ge 2 ] || die '--ref requires a value'
+        requested=$2
+        ref_explicit=1
+        seen=1
+        shift 2
+        ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+  [ -n "$name" ] || die 'add requires --skill NAME'
+  check_name "$name"
+  if [ "$action" = add ] && [ -n "$(current_entry "$name")" ]; then die "Skill already declared; use skills set: $name"; fi
+  if [ "$action" = set ] && [ "$seen" -eq 0 ]; then die 'set requires --source, --path or --ref'; fi
+  source=$(normalize_source "$source") || return 1
+  if [ "$source_changed" -eq 1 ] && [ "$source" != "$original_source" ]; then
+    if [ "$path_explicit" -eq 0 ]; then path=''; fi
+    if [ "$ref_explicit" -eq 0 ]; then requested=''; fi
+  fi
+  if [ -z "$path" ]; then path='?'; else check_path "$path" || return 1; fi
+  requested=$(resolve_ref "$source" "$requested") || return 1
+  entry=$(jq -nc --arg n "$name" --arg s "$source" --arg p "$path" --arg r "$requested" '{name:$n,source:$s,path:$p,ref:$r}')
+  install_entry "$entry" yes
+}
+update_skills() {
+  local selected=${1:-} entry name source ref candidate failure=0 snapshot="$TMP/update.json"
+  if [ -n "$selected" ]; then
+    check_name "$selected"
+    [ -n "$(current_entry "$selected")" ] || die "unknown Skill: $selected"
+  fi
+  cp "$MANIFEST" "$snapshot"
+  while IFS= read -r entry; do
+    name=$(printf '%s\n' "$entry" | jq -r '.name')
+    [ -z "$selected" ] || [ "$selected" = "$name" ] || continue
+    source=$(printf '%s\n' "$entry" | jq -r '.source')
+    if ! ref=$(resolve_ref "$source" ''); then
+      err "cannot resolve upstream for $name; keeping its recorded version"
+      failure=1
+      continue
+    fi
+    candidate=$(printf '%s\n' "$entry" | jq -c --arg r "$ref" '.ref=$r')
+    if ! install_entry "$candidate" yes; then
+      err "upgrade not completed for $name; its previous record was retained"
+      failure=1
+    fi
+  done < <(jq -c '.skills[]' "$snapshot")
+  [ "$failure" -eq 0 ]
+}
+
+if [ "${1:-}" = skills ] && [ "${2:-}" = list ]; then
+  [ $# -eq 2 ] || die 'skills list takes no arguments'
+  list_skills
+  exit 0
+fi
+ensure_mutation
+if [ $# -eq 0 ]; then
+  failures=0
+  sync_rules || failures=1
+  cp "$MANIFEST" "$TMP/sync.json"
+  while IFS= read -r entry; do if ! install_entry "$entry" no; then failures=1; fi; done < <(jq -c '.skills[]' "$TMP/sync.json")
+  say 'MCP 配置指引：./setup mcp（仅输出步骤）'
+  [ "$failures" -eq 0 ] || exit 1
+elif [ "$1" = skills ]; then
+  shift
+  [ $# -gt 0 ] || die 'skills requires add/remove/set/list/update'
+  action=$1
+  shift
+  case "$action" in
+    add | set) add_or_set "$action" "$@" ;;
+    remove)
+      [ $# -eq 1 ] || die 'remove requires exactly one NAME'
+      remove_skill "$1"
+      ;;
+    update)
+      [ $# -le 1 ] || die 'update accepts at most one NAME'
+      update_skills "${1:-}"
+      ;;
+    *) die "unknown skills action: $action" ;;
+  esac
+else die "unknown command: $1 (use --help)"; fi

@@ -1,0 +1,220 @@
+{
+  "skills": [
+    {
+      "name": "a-share-research",
+      "source": "https://github.com/RedHeartSecretMan/a-share-research-skill",
+      "path": "skill/a-share-research",
+      "ref": "076ae3e24d9b6d1e973bb07d2455a787fab9dbea"
+    },
+    {
+      "name": "archify",
+      "source": "https://github.com/RedHeartSecretMan/archify",
+      "path": "archify",
+      "ref": "b86b60789e18829885dd23c844e36549f0b40303"
+    },
+    {
+      "name": "ask-matt",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/ask-matt",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "code-review",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/code-review",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "codebase-design",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/codebase-design",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "dag",
+      "source": "https://github.com/RedHeartSecretMan/dag-skill",
+      "path": "skill/dag",
+      "ref": "f015a3b530eab5b45e8d1bbdf26a76bb65056d12"
+    },
+    {
+      "name": "diagnosing-bugs",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/diagnosing-bugs",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "domain-modeling",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/domain-modeling",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "find-docs",
+      "source": "https://github.com/upstash/context7",
+      "path": "skills/find-docs",
+      "ref": "b5e81de845092694ba1bfc5af15400f319c89b6d"
+    },
+    {
+      "name": "find-skills",
+      "source": "https://github.com/vercel-labs/skills",
+      "path": "skills/find-skills",
+      "ref": "a80e4c9d12d607631249d4d7d059f835d4b2f13a"
+    },
+    {
+      "name": "grill-me",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/productivity/grill-me",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "grill-with-docs",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/grill-with-docs",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "grilling",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/productivity/grilling",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "handoff",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/productivity/handoff",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "humanizer",
+      "source": "https://github.com/blader/humanizer",
+      "path": ".",
+      "ref": "8c307f367c91bd974002f10f2be2965d642c13df"
+    },
+    {
+      "name": "implement",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/implement",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "implement-spec",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/implement-spec",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "improve-codebase-architecture",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/improve-codebase-architecture",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "ppt-master",
+      "source": "https://github.com/hugohe3/ppt-master",
+      "path": "skills/ppt-master",
+      "ref": "78759bf62e9a1ef43e926ff9e50afa4cfe9a63cb"
+    },
+    {
+      "name": "pr",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/pr",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "prototype",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/prototype",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "research",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/research",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "resolving-merge-conflicts",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/resolving-merge-conflicts",
+      "ref": "153fc1b93de6584562765cdce299324e1ff9e661"
+    },
+    {
+      "name": "retro",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/retro",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "setup-matt-pocock-skills",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/setup-matt-pocock-skills",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "tdd",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/tdd",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "teach",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/productivity/teach",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "to-questionnaire",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/productivity/to-questionnaire",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "to-spec",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/to-spec",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "to-tickets",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/to-tickets",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "triage",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/triage",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "wait-what",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/productivity/wait-what",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "wayfinder",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/wayfinder",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "wizard",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/engineering/wizard",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "writing-for-agents",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/productivity/writing-for-agents",
+      "ref": "5beb35b040e3de97e54fa9e386d7e42d15c295c2"
+    },
+    {
+      "name": "writing-great-skills",
+      "source": "https://github.com/mattpocock/skills",
+      "path": "skills/productivity/writing-great-skills",
+      "ref": "6bcbcb09e2f1ed5fa20b4e890c732ecbb58c6b64"
+    }
+  ]
+}
