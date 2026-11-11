@@ -2,87 +2,75 @@
 
 English | [中文](README.zh.md)
 
-A personal agent recipe book.
+Personal configuration for global agent rules, Skills, packages, and MCP declarations.
 
 | File | Purpose |
 | --- | --- |
 | [AGENTS.md](AGENTS.md) | Global rules |
-| [skills.json](skills.json) | Skill sources |
-| [mcps.json](mcps.json) | MCP server configuration |
-| [setup](setup) | Sync rules, manage Skills, and view MCP guidance |
+| [skills.json](skills.json) | Skill and package sources |
+| [mcps.json](mcps.json) | MCP declarations |
+| [setup](setup) / [setup.cmd](setup.cmd) | Sync rules and manage Skills |
 
-## Getting started
+## Quick start
 
-| Environment | Requirements |
-| --- | --- |
-| macOS / Linux | Bash 3.2+ |
-| Windows | WSL or Git Bash |
-| Shared dependencies | Git, jq, Bun, Node.js |
+Requires [Git](https://git-scm.com/) and [Bun](https://bun.sh/) on macOS, Linux, or Windows.
 
 ```bash
 ./setup
 ```
 
-The command configures the same personal rules ([AGENTS.md](AGENTS.md)) for installed Codex, Claude, DSH, and Cursor clients, and installs Skills from [skills.json](skills.json).
+Run `./setup` in macOS, Linux, or Windows PowerShell (`setup.cmd` in Command Prompt).
 
-After editing [AGENTS.md](AGENTS.md), run `./setup` again. On other machines, run `git pull` first, then the same command.
+`setup` links [AGENTS.md](AGENTS.md) into installed Codex, Claude, DSH, and Cursor clients, then installs the pinned Skills and packages from [skills.json](skills.json). Re-run it after pulling changes or editing the manifest.
 
 ## Manage Skills
 
 | Task | Command |
 | --- | --- |
-| View the manifest and local status | `./setup skills list` |
-| Add and install | `./setup skills add SOURCE --skill NAME` |
-| Use a specific version | `./setup skills set NAME --ref REF` |
-| Upgrade one or all Skills | `./setup skills update [NAME]` |
-| Remove the entry and its repository-managed installation | `./setup skills remove NAME` |
+| View all installed Skills | `./setup skills list` |
+| Add a standalone Skill | `./setup skills add SOURCE --skill NAME` |
+| Change a Skill version | `./setup skills set NAME --ref REF` |
+| Update Skills | `./setup skills update [NAME]` |
+| Remove a standalone Skill | `./setup skills remove NAME` |
+| View packages | `./setup packages list` |
+| Add a package | `./setup packages add NAME SOURCE [--path MANIFEST] [--selector POINTER]` |
+| Change a package | `./setup packages set NAME [--source URL] [--path MANIFEST] [--selector POINTER] [--ref REF]` |
+| Update and reconcile a package | `./setup packages update [NAME]` |
+| Remove a package | `./setup packages remove NAME` |
 
-Set `SOURCE` to an HTTPS GitHub repository URL, `NAME` to the Skill name, and `REF` to a commit, branch, or tag.
+`NAME` is a Skill, member, or package name; `REF` may be a commit, branch, or tag. See `./setup --help` for all options.
 
-`set` can also change the source and directory. See `./setup --help` for all options and `./setup --version` for the version.
-
-`./setup` uses the recorded versions; use `update` to upgrade. If an upstream Skill is removed or renamed, the current entry is retained and a message is shown. Removal affects only installations managed by this repository.
+`skills update MEMBER` updates the package to the latest upstream commit and reinstalls only that member. Other members sync on the next `./setup`. If upstream adds, removes, or renames members, run `packages update PACKAGE`.
 
 <details>
-<summary>Edit the manifest manually</summary>
+<summary>Manifest format</summary>
 
-Each entry records four fields:
+A standalone Skill records `name`, `source`, `path`, and a full commit SHA in `ref`.
 
-| Field | Meaning |
-| --- | --- |
-| `name` | Skill name |
-| `source` | HTTPS GitHub repository URL |
-| `path` | Skill directory in the repository; use `.` for the repository root |
-| `ref` | Confirmed full Git commit SHA |
-
-`resolving-merge-conflicts` was removed upstream. `writing-great-skills` was renamed to `writing-for-agents`, which is also in the manifest. These two entries retain historical commits. The six Iluvatar Skills will be added once their online installation sources are confirmed.
+A package also uses `name`, `source`, and `ref`; `path` points to its JSON manifest, and `selector` is the JSON Pointer to its member path array. These default to `.claude-plugin/plugin.json` and `/skills`.
 
 </details>
 
 ## Configure MCP
 
-Record the services you need in [mcps.json](mcps.json), and keep credential values on the local machine. Run the following command for configuration guidance:
+Declare required servers in [mcps.json](mcps.json). Keep credentials on the local machine.
 
 ```bash
 ./setup mcp
 ```
 
-The command only lists the current MCP entries and prints a prompt you can copy to an Agent. Give the prompt to an Agent in the target client to complete configuration and verification.
+The command prints configuration steps and a prompt you can give to an Agent. It does not edit or start MCP servers.
 
-## Resolve conflicts
+## Recovery
 
-Original contents are backed up before replacement; repositories targeted by development links are preserved. Local modifications are reported as conflicts. To replace them with the repository version after confirming the change, run:
+`setup` backs up files before replacement and blocks deletion of locally modified Skills. After reviewing the change, use `./setup --force` to replace them.
 
-```bash
-./setup --force
-```
+State and backups are stored in `~/.local/state/agent-recipes/`, or under `$XDG_STATE_HOME` when set. Failed installs restore the affected item.
 
-Records and backups are stored in `~/.local/state/agent-recipes/` by default, as `state.json` and `backups/`. When `XDG_STATE_HOME` is set, its `agent-recipes/` directory is used instead. Installation failures restore the selected item.
-
-## Verification
+## Verify
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-Tests use isolated directories and a simulated installer. Actual client loading and MCP connections need verification in the target environment.
+Tests use isolated directories. Verify actual client rule loading, Skill discovery, and MCP connections in the target environment.

@@ -2,7 +2,7 @@
 """Emulate the public Skills CLI artifacts without touching the real user home."""
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 import sys
@@ -51,7 +51,7 @@ def main():
     if len(selectors) > 1:
         fail("Repeated target selectors are not supported")
     lock_path = home / ".agents/.skill-lock.json"
-    lock = json.loads(lock_path.read_text()) if lock_path.exists() else {"version": 3, "skills": {}}
+    lock = json.loads(lock_path.read_text(encoding="utf-8")) if lock_path.exists() else {"version": 3, "skills": {}}
     skills = lock.setdefault("skills", {})
     if action in ("remove", "rm"):
         names = []
@@ -75,7 +75,7 @@ def main():
                 shutil.rmtree(destination)
             skills.pop(name, None)
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path.write_text(json.dumps(lock) + "\n")
+        lock_path.write_text(json.dumps(lock) + "\n", encoding="utf-8")
         print(json.dumps({"success": True, "removed": names}))
         return
     if action != "add":
@@ -91,6 +91,14 @@ def main():
     if repo.endswith(".git"):
         repo = repo[:-4]
     source = "https://github.com/" + repo
+    rewrite_config = os.environ.get("GIT_CONFIG_GLOBAL")
+    if not rewrite_config:
+        fail("The installer must receive a local Git source cache")
+    rewrite_text = Path(rewrite_config).read_text(encoding="utf-8")
+    if f"insteadOf = {source}" not in rewrite_text:
+        fail("The installer Git config does not map the requested source")
+    if os.environ.get("GIT_CONFIG_NOSYSTEM") != "1":
+        fail("The installer must not inherit unrelated system Git URL rewrites")
     mapping = json.loads(os.environ["TEST_GIT_SOURCES"])
     checkout = mapping.get(source)
     if not checkout:
@@ -106,7 +114,7 @@ def main():
     name = args[args.index(selection) + 1]
     real_git = os.environ["TEST_REAL_GIT"]
     def git(*parameters):
-        result = subprocess.run([real_git, "-C", checkout, *parameters], capture_output=True, text=True)
+        result = subprocess.run([real_git, "-C", checkout, *parameters], capture_output=True, text=True, encoding="utf-8")
         if result.returncode:
             fail(result.stderr.strip() or "Fixture Git operation failed")
         return result.stdout.strip()
@@ -115,7 +123,7 @@ def main():
     candidates = [path for path in all_files if path == "SKILL.md" or path.endswith("/SKILL.md")]
     matches = []
     for skill_path in candidates:
-        folder = str(Path(skill_path).parent)
+        folder = str(PurePosixPath(skill_path).parent)
         if subpath and folder != subpath.rstrip("/"):
             continue
         content = git("show", sha + ":" + skill_path)
@@ -148,7 +156,7 @@ def main():
         alias.symlink_to(destination, target_is_directory=True)
     mode = os.environ.get("TEST_BUNX_BEHAVIOR", "normal")
     if mode == "partial_failure":
-        (destination / "partial.txt").write_text("partial installer output")
+        (destination / "partial.txt").write_text("partial installer output", encoding="utf-8")
     recorded_ref = "0" * 40 if mode == "bad_lock" else sha
     skills[name] = {"source": repo, "sourceType": "github", "sourceUrl": source + ".git",
                     "skillPath": skill_path, "ref": recorded_ref,
@@ -159,16 +167,16 @@ def main():
     if mode == "bad_path":
         skills[name]["skillPath"] = "different/path/SKILL.md"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path.write_text(json.dumps(lock) + "\n")
+    lock_path.write_text(json.dumps(lock) + "\n", encoding="utf-8")
     if mode == "partial_failure":
         fail("Simulated installer failure after writing files and lock", 7)
     if mode == "missing_files":
         shutil.rmtree(destination)
     if mode == "mutate_manifest":
         manifest = Path(os.environ["TEST_MANIFEST"])
-        data = json.loads(manifest.read_text())
+        data = json.loads(manifest.read_text(encoding="utf-8"))
         data["external_edit"] = "preserve this concurrent change"
-        manifest.write_text(json.dumps(data, indent=2) + "\n")
+        manifest.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     if mode == "invalid_json":
         print("not-json")
         return

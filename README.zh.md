@@ -2,82 +2,70 @@
 
 [English](README.md) | 中文
 
-一份个人 Agent 食谱。
+集中管理全局 Agent 规则、Skills、包和 MCP 声明的个人配置仓库。
 
 | 文件 | 用途 |
 | --- | --- |
 | [AGENTS.md](AGENTS.md) | 全局规则 |
-| [skills.json](skills.json) | 所需 Skills 的来源记录 |
-| [mcps.json](mcps.json) | 所需 MCP 的配置记录 |
-| [setup](setup) | 同步规则、管理 Skills、查看 MCP 指引 |
+| [skills.json](skills.json) | Skill 和包的来源 |
+| [mcps.json](mcps.json) | MCP 声明 |
+| [setup](setup) / [setup.cmd](setup.cmd) | 同步规则、管理 Skills |
 
-## 开始使用
+## 快速开始
 
-| 环境 | 要求 |
-| --- | --- |
-| macOS / Linux | Bash 3.2+ |
-| Windows | WSL 或 Git Bash |
-| 通用依赖 | Git、jq、Bun、Node.js |
+依赖 [Git](https://git-scm.com/) 和 [Bun](https://bun.sh/)，支持 macOS、Linux 和 Windows。
 
 ```bash
 ./setup
 ```
 
-为本机已安装的 Codex、Claude、DSH 和 Cursor 配置同一份个人规则（[AGENTS.md](AGENTS.md)），并按 [skills.json](skills.json) 安装 Skills。
+macOS、Linux 和 Windows PowerShell 直接运行 `./setup`，CMD 运行 `setup.cmd`。
 
-修改 [AGENTS.md](AGENTS.md) 后，再运行 `./setup`。其他机器先 `git pull`，再运行同一命令。
+`setup` 会把 [AGENTS.md](AGENTS.md) 接入已安装的 Codex、Claude、DSH 和 Cursor，并安装 [skills.json](skills.json) 中固定版本的 Skills 和包。拉取更新或修改清单后，重新运行即可。
 
 ## 管理 Skills
 
 | 要做什么 | 命令 |
 | --- | --- |
-| 查看清单和本机状态 | `./setup skills list` |
-| 添加并安装 | `./setup skills add SOURCE --skill NAME` |
-| 切换指定版本 | `./setup skills set NAME --ref REF` |
-| 升级一个或全部 Skills | `./setup skills update [NAME]` |
-| 移除清单项及本仓库管理的安装 | `./setup skills remove NAME` |
+| 查看全部安装 | `./setup skills list` |
+| 添加独立 Skill | `./setup skills add SOURCE --skill NAME` |
+| 切换 Skill 版本 | `./setup skills set NAME --ref REF` |
+| 更新 Skills | `./setup skills update [NAME]` |
+| 删除独立 Skill | `./setup skills remove NAME` |
+| 查看包 | `./setup packages list` |
+| 添加包 | `./setup packages add NAME SOURCE [--path MANIFEST] [--selector POINTER]` |
+| 修改包 | `./setup packages set NAME [--source URL] [--path MANIFEST] [--selector POINTER] [--ref REF]` |
+| 更新并同步包 | `./setup packages update [NAME]` |
+| 删除包 | `./setup packages remove NAME` |
 
-`SOURCE` 填 HTTPS GitHub 仓库地址，`NAME` 填技能名称，`REF` 填提交号、分支或标签。
+`NAME` 可以是 Skill、包成员或包名；`REF` 可以是提交号、分支或标签。完整选项见 `./setup --help`。
 
-`set` 也可修改来源和目录，完整选项见 `./setup --help`，版本信息见 `./setup --version`。
-
-`./setup` 使用清单中的版本，升级请用 `update`。上游移除或改名的 Skill 会保留原记录并提示；删除只影响本仓库管理的安装。
+`skills update MEMBER` 会把包更新到上游最新提交，但只重新安装指定成员；其他成员会在下次运行 `./setup` 时同步。如果上游新增、删除或重命名成员，请运行 `packages update PACKAGE`。
 
 <details>
-<summary>手动编辑清单</summary>
+<summary>清单格式</summary>
 
-每项记录四个字段：
+独立 Skill 记录 `name`、`source`、`path` 和完整提交号 `ref`。
 
-| 字段 | 含义 |
-| --- | --- |
-| `name` | Skill 名称 |
-| `source` | HTTPS GitHub 仓库地址 |
-| `path` | 仓库内 Skill 目录；仓库根目录使用 `.` |
-| `ref` | 已确认的完整 Git 提交号 |
-
-`resolving-merge-conflicts` 已被上游移除，`writing-great-skills` 已改名为清单中的 `writing-for-agents`，这两项保留历史提交。六个 Iluvatar Skills 待确认互联网分发来源后再纳入。
+包同样使用 `name`、`source` 和 `ref`；`path` 指向 JSON 清单，`selector` 是指向成员路径数组的 JSON Pointer。默认分别为 `.claude-plugin/plugin.json` 和 `/skills`。
 
 </details>
 
 ## 配置 MCP
 
-在 [mcps.json](mcps.json) 记录所需服务，凭据值保留在本机。运行以下命令获取配置指引：
+在 [mcps.json](mcps.json) 中声明所需服务，凭据只保存在本机。
 
 ```bash
 ./setup mcp
 ```
 
-命令只输出当前 MCP 和可复制的 Agent 提示。将提示交给目标客户端中的 Agent，按指引完成配置与验证。
+命令会输出配置步骤和可交给 Agent 的提示，但不会修改或启动 MCP 服务。
 
-## 遇到冲突
+## 恢复
 
-替换前会备份原内容；开发链接指向的原仓库保留。发现本地修改时会提示冲突，确认要用仓库版本替换后运行：
+`setup` 会在替换前备份，并阻止删除本地修改过的 Skill。确认后用 `./setup --force` 替换。
 
-```bash
-./setup --force
-```
-
-记录和备份默认位于 `~/.local/state/agent-recipes/`，分别为 `state.json` 和 `backups/`。设置 `XDG_STATE_HOME` 时，使用其下的 `agent-recipes/`。安装失败会按选中项恢复。
+状态和备份位于 `~/.local/state/agent-recipes/`；设置 `XDG_STATE_HOME` 时使用其对应目录。安装失败会恢复受影响的条目。
 
 ## 验证
 
@@ -85,4 +73,4 @@
 python3 -m unittest discover -s tests -v
 ```
 
-测试使用隔离目录和模拟安装器；客户端实际加载和 MCP 连接需在目标环境验证。
+测试使用隔离目录。客户端规则加载、Skill 发现和 MCP 连接仍需在目标环境中验证。

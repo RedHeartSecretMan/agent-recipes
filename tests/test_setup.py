@@ -10,18 +10,31 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 
 PROJECT = Path(__file__).resolve().parents[1]
 REAL_GIT = shutil.which("git")
-CURRENT_BASH = next((candidate for candidate in (
-    shutil.which("bash"), "/opt/homebrew/bin/bash", "/usr/local/bin/bash"
-) if candidate and Path(candidate).is_file()
-    and Path(candidate).resolve() != Path("/bin/bash").resolve()), shutil.which("bash"))
+BUN = shutil.which("bun")
 SOURCE = "https://github.com/agent-recipes-test/fixture"
 SECOND_SOURCE = "https://github.com/agent-recipes-test/other"
+
+
+def write_adapter(path: Path, script: Path):
+    if os.name == "nt":
+        path = path.with_suffix(".cmd")
+        path.write_text(f'@echo off\r\n"{sys.executable}" "{script}" %*\r\nexit /b %ERRORLEVEL%\r\n', encoding="utf-8")
+    else:
+        path.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n', encoding="utf-8")
+        path.chmod(0o755)
+    return path
+
+
+def link_target(path: Path):
+    target = os.readlink(path)
+    return target[4:] if os.name == "nt" and target.startswith("\\\\?\\") else target
 
 
 def snapshot(root: Path):
@@ -41,8 +54,6 @@ def snapshot(root: Path):
 
 
 class SetupBehavior:
-    shell = None
-
     def setUp(self):
         if not (PROJECT / "setup").is_file():
             self.fail("setup implementation is missing")
@@ -54,7 +65,7 @@ class SetupBehavior:
         shutil.copy2(PROJECT / "setup", self.repo / "setup")
         self.recipes = self.repo
         self.rules = "# Personal rules\n\nPreserve the user's work. 中文与 English 留空格。\n"
-        (self.recipes / "AGENTS.md").write_text(self.rules)
+        (self.recipes / "AGENTS.md").write_text(self.rules, encoding="utf-8")
         self.write_manifest([])
         self.home = self.root / "isolated home"
         self.home.mkdir()
@@ -65,11 +76,11 @@ class SetupBehavior:
         self.mcp_file.write_text(json.dumps({"mcpServers": {
             "context7": {"type": "http", "url": "https://mcp.context7.com/mcp"},
             "tripwire": {"type": "stdio", "command": str(self.mcp_tripwire)}
-        }}, indent=2) + "\n")
-        self.mcp_tripwire.write_text("#!/bin/sh\ntouch '" + str(self.root / "MCP-RAN") + "'\n")
+        }}, indent=2) + "\n", encoding="utf-8")
+        self.mcp_tripwire.write_text("#!/bin/sh\ntouch '" + str(self.root / "MCP-RAN") + "'\n", encoding="utf-8")
         self.mcp_tripwire.chmod(0o755)
         self.native_mcp = self.home / ".cursor/mcp.json"
-        self.native_mcp.write_text('{"mcpServers":{"unrelated":{"url":"https://example.invalid/mcp"}}}\n')
+        self.native_mcp.write_text('{"mcpServers":{"unrelated":{"url":"https://example.invalid/mcp"}}}\n', encoding="utf-8")
         self.native_mcp_before = self.native_mcp.read_bytes()
         self.git_log = self.root / "git.calls"
         self.bunx_log = self.root / "bunx.calls"
@@ -88,11 +99,15 @@ class SetupBehavior:
         self.real_git("-C", self.other, "checkout", "-q", "-b", "main")
         self.put_skill(self.other, "plugins/alpha", "alpha", "other-source")
         self.other_ref = self.commit(self.other, "other source")
+        adapters = self.root / "adapters"
+        adapters.mkdir()
+        self.fake_bunx = write_adapter(adapters / "fake-bunx", PROJECT / "tests/fake_bunx.py")
+        self.fake_git = write_adapter(adapters / "fake-git", PROJECT / "tests/fake_git.py")
         self.env = os.environ.copy()
         self.env.update({
             "AGENT_RECIPES_HOME": str(self.home),
-            "AGENT_RECIPES_BUNX": str(PROJECT / "tests/fake_bunx.py"),
-            "AGENT_RECIPES_GIT": str(PROJECT / "tests/fake_git.py"),
+            "AGENT_RECIPES_BUNX": str(self.fake_bunx),
+            "AGENT_RECIPES_GIT": str(self.fake_git),
             "TEST_REAL_GIT": REAL_GIT,
             "TEST_GIT_SOURCES": json.dumps({SOURCE: str(self.upstream), SECOND_SOURCE: str(self.other)}),
             "TEST_GIT_LOG": str(self.git_log),
@@ -111,7 +126,7 @@ class SetupBehavior:
             self.assertFalse((self.root / "MCP-RAN").exists(), "setup executed an MCP command")
 
     def real_git(self, *args):
-        process = subprocess.run([REAL_GIT, *map(str, args)], text=True, capture_output=True)
+        process = subprocess.run([REAL_GIT, *map(str, args)], text=True, encoding="utf-8", capture_output=True)
         if process.returncode:
             self.fail(process.stderr)
         return process.stdout.strip()
@@ -125,14 +140,25 @@ class SetupBehavior:
     def put_skill(self, repo, folder, name, version):
         location = repo / folder
         location.mkdir(parents=True, exist_ok=True)
-        (location / "SKILL.md").write_text("---\nname: " + name + "\ndescription: Test fixture\n---\n" + version + "\n")
-        (location / "resource.txt").write_text("resource: " + version + "\n")
+        (location / "SKILL.md").write_text("---\nname: " + name + "\ndescription: Test fixture\n---\n" + version + "\n", encoding="utf-8")
+        (location / "resource.txt").write_text("resource: " + version + "\n", encoding="utf-8")
+
+    def put_package_manifest(self, repo, paths):
+        manifest = repo / ".claude-plugin/plugin.json"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(json.dumps({"skills": ["./" + path for path in paths]}, indent=2) + "\n", encoding="utf-8")
 
     def write_manifest(self, skills):
-        (self.recipes / "skills.json").write_text(json.dumps({"skills": skills}, indent=2) + "\n")
+        (self.recipes / "skills.json").write_text(json.dumps({"skills": skills}, indent=2) + "\n", encoding="utf-8")
+
+    def write_packages(self, packages, skills=None):
+        (self.recipes / "skills.json").write_text(json.dumps({
+            "packages": packages,
+            "skills": skills or [],
+        }, indent=2) + "\n", encoding="utf-8")
 
     def manifest(self):
-        return json.loads((self.recipes / "skills.json").read_text())
+        return json.loads((self.recipes / "skills.json").read_text(encoding="utf-8"))
 
     def entry(self, ref=None, source=SOURCE, path="skills/alpha", name="alpha"):
         return {"name": name, "source": source, "path": path, "ref": ref or self.old}
@@ -143,8 +169,8 @@ class SetupBehavior:
             run_env["TEST_BUNX_BEHAVIOR"] = behavior
         if env:
             run_env.update(env)
-        result = subprocess.run([self.shell, str(self.repo / "setup"), *args], cwd=self.repo,
-                                env=run_env, text=True, capture_output=True, timeout=30)
+        result = subprocess.run([BUN, str(self.repo / "setup"), *args], cwd=self.repo,
+                                env=run_env, text=True, encoding="utf-8", capture_output=True, timeout=30)
         if ok is True:
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         elif ok is False:
@@ -160,28 +186,37 @@ class SetupBehavior:
         return self.home / ".agents/skills/alpha"
 
     def lock(self):
-        return json.loads((self.home / ".agents/.skill-lock.json").read_text())
+        return json.loads((self.home / ".agents/.skill-lock.json").read_text(encoding="utf-8"))
+
+    def state(self):
+        return json.loads((self.home / ".local/state/agent-recipes/state.json").read_text(encoding="utf-8"))
 
     def calls(self):
-        return [json.loads(line) for line in self.bunx_log.read_text().splitlines()] if self.bunx_log.exists() else []
+        return [json.loads(line) for line in self.bunx_log.read_text(encoding="utf-8").splitlines()] if self.bunx_log.exists() else []
 
     def test_help_is_available(self):
         output = self.invoke("--help").stdout
         self.assertIn("skills", output)
+        self.assertIn("packages", output)
         self.assertIn("./setup mcp", output)
         self.assertIn("--version", output)
         self.assertEqual(self.calls(), [])
 
+    def test_platform_entrypoints_launch_bun(self):
+        self.assertTrue((PROJECT / "setup").read_text(encoding="utf-8").startswith("#!/usr/bin/env bun\n"))
+        windows = (PROJECT / "setup.cmd").read_text(encoding="utf-8")
+        self.assertIn('bun "%~dp0setup" %*', windows)
+
     def test_version_is_read_only_and_independent_of_configuration_or_tools(self):
         before_home, before_repo = snapshot(self.home), snapshot(self.repo)
         output = self.invoke("--version").stdout
-        self.assertEqual(output, "agent-recipes 0.1.0\n")
+        self.assertEqual(output, "agent-recipes 0.2.0\n")
         self.assertEqual(snapshot(self.home), before_home)
         self.assertEqual(snapshot(self.repo), before_repo)
         self.assertEqual(self.calls(), [])
         (self.recipes / "AGENTS.md").unlink()
-        (self.recipes / "skills.json").write_text("not valid JSON\n")
-        self.mcp_file.write_text("not valid JSON\n")
+        (self.recipes / "skills.json").write_text("not valid JSON\n", encoding="utf-8")
+        self.mcp_file.write_text("not valid JSON\n", encoding="utf-8")
         empty_path = self.root / "empty executable path"
         empty_path.mkdir()
         before_home, before_repo = snapshot(self.home), snapshot(self.repo)
@@ -191,16 +226,16 @@ class SetupBehavior:
             "AGENT_RECIPES_GIT": str(empty_path / "missing-git"),
             "AGENT_RECIPES_BUNX": str(empty_path / "missing-bunx"),
         })
-        self.assertEqual(result.stdout, "agent-recipes 0.1.0\n")
+        self.assertEqual(result.stdout, "agent-recipes 0.2.0\n")
         self.assertEqual(result.stderr, "")
         self.assertEqual(snapshot(self.home), before_home)
         self.assertEqual(snapshot(self.repo), before_repo)
         self.assertEqual(self.calls(), [])
 
     def test_mcp_guide_is_read_only_and_uses_current_records(self):
-        data = json.loads(self.mcp_file.read_text())
+        data = json.loads(self.mcp_file.read_text(encoding="utf-8"))
         data["mcpServers"]["tripwire"]["env"] = {"API_KEY": "secret-must-not-print"}
-        self.mcp_file.write_text(json.dumps(data) + "\n")
+        self.mcp_file.write_text(json.dumps(data) + "\n", encoding="utf-8")
         before_home, before_repo = snapshot(self.home), snapshot(self.repo)
         output = self.invoke("mcp").stdout
         self.assertIn("context7 (http)", output)
@@ -215,14 +250,14 @@ class SetupBehavior:
         self.assertEqual(self.calls(), [])
 
     def test_mcp_guide_does_not_require_a_valid_skill_manifest(self):
-        (self.recipes / "skills.json").write_text("not-json\n")
+        (self.recipes / "skills.json").write_text("not-json\n", encoding="utf-8")
         output = self.invoke("mcp", env={"AGENT_RECIPES_HOME": "unused-relative-target"}).stdout
         self.assertIn("context7 (http)", output)
         self.assertEqual(self.calls(), [])
         self.assertFalse((self.home / ".local").exists())
 
     def test_invalid_mcp_guide_input_has_no_side_effects(self):
-        self.mcp_file.write_text("not-json\n")
+        self.mcp_file.write_text("not-json\n", encoding="utf-8")
         before_home, before_repo = snapshot(self.home), snapshot(self.repo)
         result = self.invoke("mcp", ok=False)
         self.assertIn("mcps.json", result.stderr)
@@ -230,9 +265,16 @@ class SetupBehavior:
         self.assertEqual(snapshot(self.repo), before_repo)
         self.assertEqual(self.calls(), [])
 
+    def test_utf8_bom_configuration_is_accepted(self):
+        (self.recipes / "skills.json").write_text('{"packages":[],"skills":[]}\n', encoding="utf-8-sig")
+        self.mcp_file.write_text(self.mcp_file.read_text(encoding="utf-8"), encoding="utf-8-sig")
+        self.invoke("mcp")
+        self.invoke("skills", "list")
+        self.assertEqual(self.calls(), [])
+
     def test_list_is_read_only(self):
         self.write_manifest([self.entry()])
-        (self.home / "unrelated.txt").write_text("keep")
+        (self.home / "unrelated.txt").write_text("keep", encoding="utf-8")
         before_home = snapshot(self.home)
         before_repo = snapshot(self.repo)
         output = self.invoke("skills", "list").stdout
@@ -245,13 +287,13 @@ class SetupBehavior:
         output = self.invoke().stdout
         self.assertIn("./setup mcp", output)
         canonical = self.home / ".agents/AGENTS.md"
-        self.assertEqual(canonical.read_text(), self.rules)
+        self.assertEqual(canonical.read_text(encoding="utf-8"), self.rules)
         for relative in (".codex/AGENTS.md", ".claude/CLAUDE.md", ".dsh/AGENTS.md"):
             path = self.home / relative
-            self.assertEqual(path.read_text(), self.rules)
+            self.assertEqual(path.read_text(encoding="utf-8"), self.rules)
         cursor = self.home / ".cursor/rules/global-principles.mdc"
-        self.assertIn("alwaysApply: true", cursor.read_text())
-        self.assertIn(self.rules, cursor.read_text())
+        self.assertIn("alwaysApply: true", cursor.read_text(encoding="utf-8"))
+        self.assertIn(self.rules, cursor.read_text(encoding="utf-8"))
         before = snapshot(self.home)
         self.invoke()
         self.assertEqual(snapshot(self.home), before)
@@ -270,10 +312,10 @@ class SetupBehavior:
         self.write_manifest([self.entry()])
         self.invoke()
         canonical = self.home / ".agents/AGENTS.md"
-        self.assertEqual(canonical.read_text(), self.rules)
+        self.assertEqual(canonical.read_text(encoding="utf-8"), self.rules)
         self.assertEqual(canonical.resolve(), (self.recipes / "AGENTS.md").resolve())
-        self.assertIn(self.rules, (self.home / ".cursor/rules/global-principles.mdc").read_text())
-        self.assertIn("old", (self.installed / "SKILL.md").read_text())
+        self.assertIn(self.rules, (self.home / ".cursor/rules/global-principles.mdc").read_text(encoding="utf-8"))
+        self.assertIn("old", (self.installed / "SKILL.md").read_text(encoding="utf-8"))
         guide = self.invoke("mcp").stdout
         self.assertIn(str(self.mcp_file), guide)
         self.invoke("skills", "set", "alpha", "--ref", self.new)
@@ -292,17 +334,17 @@ class SetupBehavior:
                 canonical.symlink_to(external)
                 self.invoke(ok=False)
                 self.assertTrue(canonical.is_symlink())
-                self.assertEqual(os.readlink(canonical), str(external))
+                self.assertEqual(link_target(canonical), str(external))
                 self.assertFalse(canonical.exists())
 
     def test_rules_conflict_preserved_and_force_backed_up(self):
         canonical = self.home / ".agents/AGENTS.md"
         canonical.parent.mkdir()
-        canonical.write_text("my existing rules\n")
+        canonical.write_bytes(b"my existing rules\n")
         self.invoke(ok=False)
-        self.assertEqual(canonical.read_text(), "my existing rules\n")
+        self.assertEqual(canonical.read_text(encoding="utf-8"), "my existing rules\n")
         self.invoke("--force")
-        self.assertEqual(canonical.read_text(), self.rules)
+        self.assertEqual(canonical.read_text(encoding="utf-8"), self.rules)
         backups = self.home / ".local/state/agent-recipes"
         self.assertTrue(any(p.is_file() and not p.is_symlink() and p.read_bytes() == b"my existing rules\n"
                             for p in backups.rglob("*")))
@@ -310,7 +352,7 @@ class SetupBehavior:
     def check_rule_directory_refused(self, relative):
         target = self.home / relative
         target.mkdir(parents=True)
-        (target / "keep.txt").write_text("directory content must remain in place\n")
+        (target / "keep.txt").write_text("directory content must remain in place\n", encoding="utf-8")
         before = snapshot(target)
         for parameters in [(), ("--force",)]:
             with self.subTest(parameters=parameters):
@@ -331,7 +373,7 @@ class SetupBehavior:
     def check_rule_symlink_to_directory_refused(self, relative):
         referent = self.root / "outside target directory"
         referent.mkdir()
-        (referent / "keep.txt").write_text("external directory must not receive rule files\n")
+        (referent / "keep.txt").write_text("external directory must not receive rule files\n", encoding="utf-8")
         target = self.home / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.symlink_to(referent, target_is_directory=True)
@@ -357,8 +399,9 @@ class SetupBehavior:
     def test_add_records_fixed_version_and_native_installer(self):
         self.add_alpha()
         self.assertEqual(self.manifest()["skills"], [self.entry()])
-        self.assertIn("old", (self.installed / "SKILL.md").read_text())
+        self.assertIn("old", (self.installed / "SKILL.md").read_text(encoding="utf-8"))
         self.assertEqual(self.lock()["skills"]["alpha"]["ref"], self.old)
+        self.assertNotIn("lastSelectedAgents", self.lock())
         additions = [call for call in self.calls() if call[:2] == ["skills@latest", "add"]]
         self.assertEqual(len(additions), 1)
         self.assertIn(self.old, additions[0][2])
@@ -371,19 +414,19 @@ class SetupBehavior:
     def test_manifest_key_order_does_not_trigger_reinstallation(self):
         self.add_alpha()
         manifest = self.recipes / "skills.json"
-        manifest.write_text(json.dumps(self.manifest(), sort_keys=True, indent=2) + "\n")
+        manifest.write_text(json.dumps(self.manifest(), sort_keys=True, indent=2) + "\n", encoding="utf-8")
         listing = self.invoke("skills", "list").stdout
         alpha_line = next(line for line in listing.splitlines() if line.split() and line.split()[0] == "alpha")
         self.assertIn("installed", alpha_line.lower().split())
         calls_before = self.calls()
         self.invoke()
         self.assertEqual(self.calls(), calls_before, "Object key order alone caused a native reinstall")
-        self.assertIn("old", (self.installed / "SKILL.md").read_text())
+        self.assertIn("old", (self.installed / "SKILL.md").read_text(encoding="utf-8"))
 
     def test_add_resolves_default_branch_when_ref_omitted(self):
         self.invoke("skills", "add", SOURCE, "--skill", "alpha", "--path", "skills/alpha")
         self.assertEqual(self.manifest()["skills"][0]["ref"], self.new)
-        self.assertIn("new", (self.installed / "SKILL.md").read_text())
+        self.assertIn("new", (self.installed / "SKILL.md").read_text(encoding="utf-8"))
 
     def test_add_succeeds_without_initialized_client_directories(self):
         for name in (".codex", ".claude", ".dsh", ".cursor"):
@@ -391,7 +434,7 @@ class SetupBehavior:
         self.native_mcp_before = None
         self.add_alpha()
         self.assertEqual(self.manifest()["skills"], [self.entry()])
-        self.assertIn("old", (self.installed / "SKILL.md").read_text())
+        self.assertIn("old", (self.installed / "SKILL.md").read_text(encoding="utf-8"))
         for name in (".codex", ".claude", ".dsh", ".cursor"):
             self.assertFalse((self.home / name).exists(), "Universal Skill installation should not initialize clients")
 
@@ -406,12 +449,205 @@ class SetupBehavior:
         item = next(x for x in self.manifest()["skills"] if x["name"] == "root-skill")
         self.assertEqual(item["path"], ".")
         self.assertEqual(item["ref"], ref)
-        self.assertIn("root package", (self.home / ".agents/skills/root-skill/SKILL.md").read_text())
+        self.assertIn("root package", (self.home / ".agents/skills/root-skill/SKILL.md").read_text(encoding="utf-8"))
+
+    def test_package_installs_members_from_one_manifest_entry(self):
+        self.put_package_manifest(self.upstream, ["skills/alpha", "skills/beta"])
+        ref = self.commit(self.upstream, "package manifest")
+        package = {"name": "fixture-pack", "source": SOURCE,
+                   "path": ".claude-plugin/plugin.json", "selector": "/skills", "ref": ref}
+        self.write_packages([package])
+
+        self.invoke()
+
+        self.assertEqual(self.manifest()["packages"], [package])
+        self.assertEqual(self.manifest()["skills"], [])
+        self.assertIn("new", self.installed.joinpath("SKILL.md").read_text(encoding="utf-8"))
+        self.assertIn("beta", (self.home / ".agents/skills/beta/SKILL.md").read_text(encoding="utf-8"))
+        stored = self.state()["packages"]["fixture-pack"]
+        self.assertEqual(stored["entry"], package)
+        self.assertEqual({item["name"] for item in stored["members"]}, {"alpha", "beta"})
+        self.assertEqual(self.state()["skills"]["alpha"]["package"], "fixture-pack")
+
+    def test_package_supports_a_custom_json_pointer_selector(self):
+        manifest = self.upstream / "package/collection.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps({"members": {"promoted": ["skills/alpha"]}}) + "\n", encoding="utf-8")
+        ref = self.commit(self.upstream, "custom package manifest")
+        package = {
+            "name": "custom-pack",
+            "source": SOURCE,
+            "path": "package/collection.json",
+            "selector": "/members/promoted",
+            "ref": ref,
+        }
+        self.write_packages([package])
+
+        self.invoke()
+
+        self.assertIn("new", self.installed.joinpath("SKILL.md").read_text(encoding="utf-8"))
+        self.assertEqual(self.state()["packages"]["custom-pack"]["entry"], package)
+
+    def test_package_selector_supports_array_indexes(self):
+        manifest = self.upstream / "package/collection.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps({"groups": [{"skills": ["skills/alpha"]}]}) + "\n", encoding="utf-8")
+        ref = self.commit(self.upstream, "array package manifest")
+        self.write_packages([{
+            "name": "indexed-pack",
+            "source": SOURCE,
+            "path": "package/collection.json",
+            "selector": "/groups/0/skills",
+            "ref": ref,
+        }])
+
+        self.invoke()
+
+        self.assertIn("new", self.installed.joinpath("SKILL.md").read_text(encoding="utf-8"))
+
+    def test_git_access_retries_without_global_url_rewrites(self):
+        self.invoke("skills", "add", SOURCE, "--skill", "alpha",
+                    "--path", "skills/alpha", "--ref", self.old,
+                    env={"TEST_GIT_FAIL_FIRST_FETCH": "1"})
+
+        git_calls = [json.loads(line) for line in self.git_log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(sum("fetch" in call for call in git_calls), 2)
+        self.assertIn("old", self.installed.joinpath("SKILL.md").read_text(encoding="utf-8"))
+
+    def test_package_update_reconciles_added_and_removed_members(self):
+        self.put_package_manifest(self.upstream, ["skills/alpha", "skills/beta"])
+        first = self.commit(self.upstream, "package manifest")
+        self.write_packages([{
+            "name": "fixture-pack",
+            "source": SOURCE,
+            "path": ".claude-plugin/plugin.json",
+            "selector": "/skills",
+            "ref": first,
+        }])
+        self.invoke()
+
+        shutil.rmtree(self.upstream / "skills/beta")
+        self.put_skill(self.upstream, "skills/gamma", "gamma", "gamma")
+        self.put_package_manifest(self.upstream, ["skills/alpha", "skills/gamma"])
+        second = self.commit(self.upstream, "replace package member")
+
+        self.invoke("skills", "update")
+
+        self.assertEqual(self.manifest()["packages"][0]["ref"], second)
+        self.assertFalse((self.home / ".agents/skills/beta").exists())
+        self.assertIn("gamma", (self.home / ".agents/skills/gamma/SKILL.md").read_text(encoding="utf-8"))
+        self.assertEqual({item["name"] for item in self.state()["packages"]["fixture-pack"]["members"]},
+                         {"alpha", "gamma"})
+        self.assertNotIn("beta", self.state()["skills"])
+
+    def test_updating_a_package_member_updates_the_package_ref(self):
+        self.put_package_manifest(self.upstream, ["skills/alpha", "skills/beta"])
+        first = self.commit(self.upstream, "package manifest")
+        self.write_packages([{
+            "name": "fixture-pack",
+            "source": SOURCE,
+            "path": ".claude-plugin/plugin.json",
+            "selector": "/skills",
+            "ref": first,
+        }])
+        self.invoke()
+
+        self.put_skill(self.upstream, "skills/alpha", "alpha", "package update")
+        self.put_skill(self.upstream, "skills/beta", "beta", "beta pending")
+        second = self.commit(self.upstream, "update package member")
+        self.invoke("skills", "update", "alpha")
+
+        self.assertEqual(self.manifest()["packages"][0]["ref"], second)
+        self.assertIn("package update", self.installed.joinpath("SKILL.md").read_text(encoding="utf-8"))
+        self.assertIn("beta", (self.home / ".agents/skills/beta/SKILL.md").read_text(encoding="utf-8"))
+        self.assertNotIn("beta pending", (self.home / ".agents/skills/beta/SKILL.md").read_text(encoding="utf-8"))
+        self.assertIn("\toutdated", self.invoke("packages", "list").stdout)
+
+        self.invoke("packages", "update", "fixture-pack")
+        self.assertIn("beta pending", (self.home / ".agents/skills/beta/SKILL.md").read_text(encoding="utf-8"))
+
+    def test_member_update_requires_full_package_update_when_members_change(self):
+        self.put_package_manifest(self.upstream, ["skills/alpha", "skills/beta"])
+        first = self.commit(self.upstream, "package manifest")
+        self.write_packages([{
+            "name": "fixture-pack",
+            "source": SOURCE,
+            "path": ".claude-plugin/plugin.json",
+            "selector": "/skills",
+            "ref": first,
+        }])
+        self.invoke()
+
+        self.put_skill(self.upstream, "skills/gamma", "gamma", "gamma")
+        self.put_package_manifest(self.upstream, ["skills/alpha", "skills/gamma"])
+        self.commit(self.upstream, "change package members")
+
+        self.invoke("skills", "update", "alpha", ok=False)
+        self.assertEqual(self.manifest()["packages"][0]["ref"], first)
+        self.assertFalse((self.home / ".agents/skills/gamma").exists())
+
+    def test_package_member_uses_package_management_surface(self):
+        self.put_package_manifest(self.upstream, ["skills/alpha"])
+        ref = self.commit(self.upstream, "package manifest")
+        self.write_packages([{
+            "name": "fixture-pack",
+            "source": SOURCE,
+            "path": ".claude-plugin/plugin.json",
+            "selector": "/skills",
+            "ref": ref,
+        }])
+        self.invoke()
+
+        self.invoke("skills", "remove", "alpha", ok=False)
+        set_result = self.invoke("skills", "set", "alpha", "--ref", ref, ok=False)
+        self.assertIn("packages set", set_result.stderr)
+        listing = self.invoke("skills", "list").stdout
+        self.assertIn("fixture-pack", listing)
+        package_listing = self.invoke("packages", "list").stdout
+        self.assertIn("fixture-pack", package_listing)
+        self.assertIn("\tinstalled", package_listing)
+
+    def test_package_add_and_remove_manage_the_whole_bundle(self):
+        self.put_package_manifest(self.upstream, ["skills/alpha", "skills/beta"])
+        ref = self.commit(self.upstream, "package manifest")
+
+        self.invoke("packages", "add", "fixture-pack", SOURCE,
+                    "--path", ".claude-plugin/plugin.json", "--ref", ref)
+        self.assertEqual(self.manifest()["packages"][0]["ref"], ref)
+        self.assertTrue((self.home / ".agents/skills/alpha/SKILL.md").is_file())
+        self.assertTrue((self.home / ".agents/skills/beta/SKILL.md").is_file())
+
+        self.invoke("packages", "remove", "fixture-pack")
+        self.assertEqual(self.manifest()["packages"], [])
+        self.assertFalse((self.home / ".agents/skills/alpha").exists())
+        self.assertFalse((self.home / ".agents/skills/beta").exists())
+        self.assertNotIn("fixture-pack", self.state()["packages"])
+
+    def test_package_set_ref_reconciles_members(self):
+        self.put_package_manifest(self.upstream, ["skills/alpha"])
+        first = self.commit(self.upstream, "package manifest")
+        self.write_packages([{
+            "name": "fixture-pack",
+            "source": SOURCE,
+            "path": ".claude-plugin/plugin.json",
+            "selector": "/skills",
+            "ref": first,
+        }])
+        self.invoke()
+
+        self.put_skill(self.upstream, "skills/beta", "beta", "beta")
+        self.put_package_manifest(self.upstream, ["skills/beta"])
+        second = self.commit(self.upstream, "change package members")
+        self.invoke("packages", "set", "fixture-pack", "--ref", second)
+
+        self.assertEqual(self.manifest()["packages"][0]["ref"], second)
+        self.assertFalse((self.home / ".agents/skills/alpha").exists())
+        self.assertTrue((self.home / ".agents/skills/beta/SKILL.md").is_file())
 
     def test_replacing_development_link_preserves_source_checkout(self):
         checkout = self.root / "development checkout"
         checkout.mkdir()
-        (checkout / "SKILL.md").write_text("uncommitted development content\n")
+        (checkout / "SKILL.md").write_text("uncommitted development content\n", encoding="utf-8")
         self.installed.parent.mkdir(parents=True)
         self.installed.symlink_to(checkout, target_is_directory=True)
         before = snapshot(checkout)
@@ -419,52 +655,52 @@ class SetupBehavior:
                     "--path", "skills/alpha", "--ref", self.old)
         self.assertEqual(snapshot(checkout), before)
         self.assertNotEqual(self.installed.resolve(), checkout.resolve())
-        self.assertIn("old", (self.installed / "SKILL.md").read_text())
+        self.assertIn("old", (self.installed / "SKILL.md").read_text(encoding="utf-8"))
 
     def test_set_ref_updates_configuration_and_installation(self):
         self.add_alpha()
         self.invoke("skills", "set", "alpha", "--ref", self.new)
         self.assertEqual(self.manifest()["skills"][0]["ref"], self.new)
-        self.assertIn("new", (self.installed / "resource.txt").read_text())
+        self.assertIn("new", (self.installed / "resource.txt").read_text(encoding="utf-8"))
 
     def test_set_changes_source_and_path(self):
         self.add_alpha()
         self.invoke("skills", "set", "alpha", "--source", SECOND_SOURCE,
                     "--path", "plugins/alpha", "--ref", self.other_ref)
         self.assertEqual(self.manifest()["skills"], [self.entry(self.other_ref, SECOND_SOURCE, "plugins/alpha")])
-        self.assertIn("other-source", (self.installed / "SKILL.md").read_text())
+        self.assertIn("other-source", (self.installed / "SKILL.md").read_text(encoding="utf-8"))
 
     def test_set_ref_before_source_is_order_independent(self):
         self.add_alpha()
         self.invoke("skills", "set", "alpha", "--ref", self.other_ref,
                     "--source", SECOND_SOURCE, "--path", "plugins/alpha")
         self.assertEqual(self.manifest()["skills"], [self.entry(self.other_ref, SECOND_SOURCE, "plugins/alpha")])
-        self.assertIn("other-source", (self.installed / "SKILL.md").read_text())
+        self.assertIn("other-source", (self.installed / "SKILL.md").read_text(encoding="utf-8"))
 
     def test_set_path_before_source_is_order_independent(self):
         self.add_alpha()
         self.invoke("skills", "set", "alpha", "--path", "plugins/alpha",
                     "--source", SECOND_SOURCE, "--ref", self.other_ref)
         self.assertEqual(self.manifest()["skills"], [self.entry(self.other_ref, SECOND_SOURCE, "plugins/alpha")])
-        self.assertIn("other-source", (self.installed / "SKILL.md").read_text())
+        self.assertIn("other-source", (self.installed / "SKILL.md").read_text(encoding="utf-8"))
 
     def test_remove_only_managed_installation(self):
         self.add_alpha()
         unrelated = self.home / ".agents/skills/unrelated/SKILL.md"
         unrelated.parent.mkdir()
-        unrelated.write_text("keep unrelated")
+        unrelated.write_text("keep unrelated", encoding="utf-8")
         self.invoke("skills", "remove", "alpha")
         self.assertEqual(self.manifest()["skills"], [])
         self.assertFalse(self.installed.exists())
-        self.assertEqual(unrelated.read_text(), "keep unrelated")
+        self.assertEqual(unrelated.read_text(encoding="utf-8"), "keep unrelated")
 
     def test_remove_does_not_delete_unowned_directory(self):
         self.write_manifest([self.entry()])
         self.installed.mkdir(parents=True)
-        (self.installed / "SKILL.md").write_text("unowned user content")
+        (self.installed / "SKILL.md").write_text("unowned user content", encoding="utf-8")
         self.invoke("skills", "remove", "alpha")
         self.assertEqual(self.manifest()["skills"], [])
-        self.assertEqual((self.installed / "SKILL.md").read_text(), "unowned user content")
+        self.assertEqual((self.installed / "SKILL.md").read_text(encoding="utf-8"), "unowned user content")
         self.assertEqual(self.calls(), [], "Removing only a declaration must not invoke bunx")
 
     def test_remove_missing_installation_only_updates_declaration(self):
@@ -478,8 +714,8 @@ class SetupBehavior:
         self.add_alpha()
         external = self.home / ".claude/skills/alpha"
         external.mkdir(parents=True)
-        (external / "SKILL.md").write_text("separately maintained alpha\n")
-        (external / "custom.txt").write_text("keep this independent copy\n")
+        (external / "SKILL.md").write_text("separately maintained alpha\n", encoding="utf-8")
+        (external / "custom.txt").write_text("keep this independent copy\n", encoding="utf-8")
         before = snapshot(external)
         listing = self.invoke("skills", "list").stdout
         self.assertIn("external", listing.lower())
@@ -487,7 +723,7 @@ class SetupBehavior:
                     env={"TEST_BUNX_CREATE_ALIAS": "1"})
         self.assertEqual(snapshot(external), before)
         self.assertFalse(external.is_symlink())
-        self.assertIn("new", (self.installed / "SKILL.md").read_text())
+        self.assertIn("new", (self.installed / "SKILL.md").read_text(encoding="utf-8"))
         calls_before_remove = self.calls()
         self.invoke("skills", "remove", "alpha", ok=False)
         self.assertEqual(snapshot(external), before)
@@ -500,7 +736,34 @@ class SetupBehavior:
         self.invoke("skills", "update", "alpha")
         self.assertEqual(self.manifest()["skills"][0]["ref"], self.new)
         self.assertEqual(self.lock()["skills"]["alpha"]["ref"], self.new)
-        self.assertIn("new", (self.installed / "SKILL.md").read_text())
+        self.assertIn("new", (self.installed / "SKILL.md").read_text(encoding="utf-8"))
+
+    def test_update_reuses_source_cache_and_skips_unchanged_skill_content(self):
+        self.invoke("skills", "add", SOURCE, "--skill", "alpha",
+                    "--path", "skills/alpha", "--ref", self.old)
+        self.invoke("skills", "add", SOURCE, "--skill", "beta",
+                    "--path", "skills/beta", "--ref", self.old)
+        self.git_log.write_text("", encoding="utf-8")
+        self.bunx_log.write_text("", encoding="utf-8")
+
+        self.invoke("skills", "update")
+
+        entries = {item["name"]: item for item in self.manifest()["skills"]}
+        self.assertEqual(entries["alpha"]["ref"], self.new)
+        self.assertEqual(entries["beta"]["ref"], self.new)
+        self.assertIn("new", (self.installed / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertIn("beta", (self.home / ".agents/skills/beta/SKILL.md").read_text(encoding="utf-8"))
+
+        git_calls = [json.loads(line) for line in self.git_log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(sum("ls-remote" in call for call in git_calls), 1,
+                         "The source HEAD was resolved more than once")
+        self.assertEqual(sum("fetch" in call for call in git_calls), 1,
+                         "The source commit was fetched more than once")
+
+        installer_calls = [call for call in self.calls() if call[:2] == ["skills@latest", "add"]]
+        self.assertEqual(len(installer_calls), 1,
+                         "An unchanged Skill tree should update metadata without reinstalling")
+        self.assertIn("alpha", installer_calls[0])
 
     def test_update_missing_upstream_skill_preserves_old_version(self):
         self.add_alpha()
@@ -508,14 +771,14 @@ class SetupBehavior:
         self.commit(self.upstream, "remove upstream alpha")
         self.invoke("skills", "update", "alpha", ok=None)
         self.assertEqual(self.manifest()["skills"][0]["ref"], self.old)
-        self.assertIn("old", (self.installed / "SKILL.md").read_text())
+        self.assertIn("old", (self.installed / "SKILL.md").read_text(encoding="utf-8"))
 
     def check_rejected_install_restores_old(self, behavior):
         self.add_alpha()
         lock_path = self.home / ".agents/.skill-lock.json"
         before_lock = self.lock()
         before_lock["skills"]["unrelated"] = {"source": "keep/me", "ref": "f" * 40}
-        lock_path.write_text(json.dumps(before_lock) + "\n")
+        lock_path.write_text(json.dumps(before_lock) + "\n", encoding="utf-8")
         previous_manifest = (self.recipes / "skills.json").read_bytes()
         previous_install = snapshot(self.installed)
         previous_lock_entry = self.lock()["skills"]["alpha"]
@@ -546,11 +809,11 @@ class SetupBehavior:
     def test_modified_managed_skill_requires_force(self):
         self.add_alpha()
         modified = self.installed / "resource.txt"
-        modified.write_text("manual change\n")
+        modified.write_bytes(b"manual change\n")
         self.invoke("skills", "set", "alpha", "--ref", self.new, ok=False)
-        self.assertEqual(modified.read_text(), "manual change\n")
+        self.assertEqual(modified.read_text(encoding="utf-8"), "manual change\n")
         self.invoke("--force", "skills", "set", "alpha", "--ref", self.new)
-        self.assertIn("new", modified.read_text())
+        self.assertIn("new", modified.read_text(encoding="utf-8"))
         backups = self.home / ".local/state/agent-recipes"
         self.assertTrue(any(p.is_file() and not p.is_symlink() and p.read_bytes() == b"manual change\n"
                             for p in backups.rglob("*")))
@@ -586,20 +849,15 @@ class SetupBehavior:
         run_env = self.env.copy()
         run_env.pop("AGENT_RECIPES_BUNX")
         self.write_manifest([self.entry()])
-        result = subprocess.run([self.shell, str(self.repo / "setup")], cwd=self.repo, env=run_env,
-                                text=True, capture_output=True, timeout=30)
+        result = subprocess.run([BUN, str(self.repo / "setup")], cwd=self.repo, env=run_env,
+                                text=True, encoding="utf-8", capture_output=True, timeout=30)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.bunx_log.exists())
 
 
-@unittest.skipUnless(Path("/bin/bash").is_file(), "System /bin/bash is unavailable")
-class SystemBashTests(SetupBehavior, unittest.TestCase):
-    shell = "/bin/bash"
-
-
-@unittest.skipIf(CURRENT_BASH == "/bin/bash", "Current bash is the system bash")
-class CurrentBashTests(SetupBehavior, unittest.TestCase):
-    shell = CURRENT_BASH
+@unittest.skipUnless(BUN, "Bun is unavailable")
+class SetupTests(SetupBehavior, unittest.TestCase):
+    pass
 
 
 if __name__ == "__main__":

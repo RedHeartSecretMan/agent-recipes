@@ -11,6 +11,14 @@ def main():
     real_git = os.environ["TEST_REAL_GIT"]
     sources = json.loads(os.environ["TEST_GIT_SOURCES"])
     original = list(args)
+    log = os.environ.get("TEST_GIT_LOG")
+    if log:
+        with open(log, "a", encoding="utf-8") as output:
+            output.write(json.dumps(original) + "\n")
+    if ("fetch" in args and os.environ.get("TEST_GIT_FAIL_FIRST_FETCH") and
+            os.environ.get("GIT_CONFIG_NOSYSTEM") != "1"):
+        sys.stderr.write("Simulated rewritten Git remote failure\n")
+        return 128
     for i, arg in enumerate(args):
         if arg in sources:
             args[i] = sources[arg]
@@ -23,7 +31,7 @@ def main():
     if "fetch" in args and "origin" in args:
         cmd_index = args.index("fetch")
         prefix = args[:cmd_index]
-        result = subprocess.run([real_git, *prefix, "remote", "get-url", "origin"], text=True, capture_output=True)
+        result = subprocess.run([real_git, *prefix, "remote", "get-url", "origin"], text=True, encoding="utf-8", capture_output=True)
         if result.returncode == 0:
             origin = result.stdout.strip().rstrip("/")
             normalized = origin[:-4] if origin.endswith(".git") else origin
@@ -32,10 +40,6 @@ def main():
             elif origin.startswith(("https://", "http://", "ssh://", "git@")):
                 sys.stderr.write("Test Git adapter refuses unmapped origin\n")
                 return 91
-    log = os.environ.get("TEST_GIT_LOG")
-    if log:
-        with open(log, "a", encoding="utf-8") as output:
-            output.write(json.dumps(original) + "\n")
     return subprocess.run([real_git, *args]).returncode
 
 
