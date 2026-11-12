@@ -1,6 +1,6 @@
 # agent-recipes
 
-English | [中文](README.zh.md)
+English | [简体中文](README.zh-CN.md)
 
 Personal configuration for global agent rules, Skills, packages, and MCP declarations.
 

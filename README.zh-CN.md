@@ -1,6 +1,6 @@
 # agent-recipes
 
-[English](README.md) | 中文
+[English](README.md) | 简体中文
 
 集中管理全局 Agent 规则、Skills、包和 MCP 声明的个人配置仓库。
 
