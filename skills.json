@@ -46,6 +46,12 @@
       "ref": "b48c832f0f809c1b5658edbb838c2521b72f2413"
     },
     {
+      "name": "impeccable",
+      "source": "https://github.com/pbakaus/impeccable",
+      "path": ".agents/skills/impeccable",
+      "ref": "b4bff1626c344067788c2679f048a20057c7cc5a"
+    },
+    {
       "name": "ppt-master",
       "source": "https://github.com/hugohe3/ppt-master",
       "path": "skills/ppt-master",
